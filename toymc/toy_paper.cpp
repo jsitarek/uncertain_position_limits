@@ -38,7 +38,7 @@ TH1F *hoff=0;
 
 const Double_t xmin=-10, xmax=10;
 const Int_t nbins=40;
-const Double_t offmulti=5; // number of off positions (for background estimation)
+const Double_t offmulti=5; //number of off positions (for background estimation)
 const Double_t conf=0.95; // confidence level of U.L.
 const Bool_t useLiMalike=kTRUE; // if Li&Ma should be used for TS instead of numerical fits 
 
@@ -56,7 +56,8 @@ void prep_irf()
   canprep->SetRightMargin(0.01);
   TF1 *faeff = new TF1 ("faeff", "100*(exp(-pow(x-6.,2)/(2*pow(2.,2)))+exp(-pow(x,2)/(2*pow(2.,2)))+exp(-pow(x+6.,2)/(2*pow(2.,2))))", xmin, xmax);
   TF1 *fbgd = new TF1 ("fbgd", "100*(exp(-pow(x-6.,2)/(2*pow(2.2,2)))+exp(-pow(x,2)/(2*pow(2.2,2)))+exp(-pow(x+6.,2)/(2*pow(2.2,2))))", xmin, xmax);
-
+  // TF1 *faeff = new TF1("faeff", "100", xmin, xmax);
+  // TF1 *fbgd = new TF1("fbgd", "100", xmin, xmax);
   hgw = new TH1F ("hgw", ";position;scaled GW probability", nbins, xmin, xmax);
   haeff = new TH1F ("haeff", ";position;Effective Area", nbins, xmin, xmax);
   hbgd = new TH1F ("hbgd", ";position;Background", nbins, xmin, xmax);
@@ -126,7 +127,7 @@ void fillhists(Double_t flux, Double_t &truex, TH1F *hofforg=0, Bool_t quiet=kFA
   Int_t ix = hon->FindBin(truex);
   if (!quiet)
     cout<<"source at x="<<truex<<", ntrue = "<<ntrue<<endl;
-  hon->Fill(truex, ntrue);
+  hon->Fill(truex, gRandom->Poisson(ntrue));
   hon->SetBinError(ix, sqrt(hon->GetBinContent(ix)));
 }
 
@@ -422,7 +423,6 @@ Double_t calc_rolke(Double_t *limits, Bool_t quiet=kTRUE)
       Double_t on=hon->GetBinContent(i);
       Double_t off=hoff->GetBinContent(i);
       Double_t doff=hoff->GetBinError(i);
-
       trolke.SetGaussBkgKnownEff(on, off, doff, 1.);
       limits[i-1]=trolke.GetUpperLimit()/aeff;
       if (limits[i-1]>worstlimit)
@@ -542,7 +542,15 @@ void show_one_example(Double_t trueflux, Int_t seed, Bool_t singlebin=kFALSE)
   TH1F *hofforg = (TH1F*) hoff->Clone("hofforg");
   TCanvas *cevents = new TCanvas ("cevents", "", 640, 480);
   cevents->SetTopMargin(0.01);
-  cevents->SetRightMargin(0.01);
+  cevents->SetRightMargin(0.02);
+  cevents->SetLeftMargin(0.11);
+  cevents->SetBottomMargin(0.12);
+  honorg->GetXaxis()->SetTitleSize(0.06);
+  honorg->GetXaxis()->SetTitleOffset(0.9);
+  honorg->GetYaxis()->SetTitleSize(0.06);
+  honorg->GetYaxis()->SetTitleOffset(0.9);
+  honorg->GetXaxis()->SetLabelSize(0.06);
+  honorg->GetYaxis()->SetLabelSize(0.06);
   honorg->Draw("E");
   hofforg->Draw("same");
   TLegend *leg1 = new TLegend (0.32, 0.14, 0.77, 0.28);
@@ -559,9 +567,17 @@ void show_one_example(Double_t trueflux, Int_t seed, Bool_t singlebin=kFALSE)
   lglobal->SetLineColor(kRed);
   
   TCanvas *climits = new TCanvas ("climits", "", 640, 480);  
-  climits->SetTopMargin(0.01);
-  climits->SetRightMargin(0.01);
+  climits->SetTopMargin(0.02);
+  climits->SetRightMargin(0.02);
+  climits->SetLeftMargin(0.11);
+  climits->SetBottomMargin(0.12);
   TH1F *hosie = climits->DrawFrame(xmin, 0, xmax, trueflux+0.7);
+  hosie->GetXaxis()->SetTitleSize(0.06);
+  hosie->GetXaxis()->SetTitleOffset(0.9);
+  hosie->GetYaxis()->SetTitleSize(0.06);
+  hosie->GetYaxis()->SetTitleOffset(0.9);
+  hosie->GetXaxis()->SetLabelSize(0.06);
+  hosie->GetYaxis()->SetLabelSize(0.06);
   hosie->GetXaxis()->SetTitle("Position");
   hosie->GetYaxis()->SetTitle("Flux [a.u.]");
   grolke->Draw("P");
@@ -716,14 +732,55 @@ void detection_agnostic(Int_t seed, Double_t minflux, Int_t npf)
   h->Draw();
 }
 
+void test_agnostic(Int_t seed=1, Double_t trueflux=2.5)
+{
+  gRandom->SetSeed(seed);
+  TH1F *h = new TH1F ("h", "", 125, 0, 3.5);
+  TH1F *h2 = new TH1F ("h2", ";position;limit position", nbins, xmin, xmax);
+  TH1F *h3 = new TH1F ("h3", "", 125, 0, 3.5);
+  Int_t npf=10000;
+  Int_t nok=0;
+  Int_t nmiss=0;
+  for (int iev=0; iev<npf; iev++)
+    {
+      if (iev% 10000 == 1) cout<<iev<<"/"<<npf<<endl;
+      Double_t truex;
+      fillhists(trueflux, truex);
+      Double_t *rolkelimits = new Double_t[nbins];
+      Double_t rolkelimit=calc_rolke(rolkelimits, kFALSE);
+      if (rolkelimit>trueflux)
+	nok++;
+      Int_t ibin=hon->FindBin(truex);
+      for (int i=0; i<nbins; i++)
+	if(rolkelimits[i]==rolkelimit)
+	  {
+	    h2->Fill(h2->GetBinCenter(i+1));
+	    if (ibin!=i+1)
+	      nmiss++;
+	  }
+      h->Fill(rolkelimit);
+      h3->Fill((hon->GetBinContent(ibin)-hoff->GetBinContent(ibin))/haeff->GetBinContent(ibin));
+    }
+  cout<<"nmiss="<<nmiss<<endl;
+  cout<<"C.L.="<<100.*nok/npf<<"%"<<endl;
+  TCanvas *cpsum = new TCanvas ("cpsum", "", 640, 480);
+  h->Draw();
+  TCanvas *c2 = new TCanvas ("c2", "", 640, 480);
+  h2->Draw();
+  TCanvas *c3 = new TCanvas ("c3", "", 640, 480);
+  h3->Draw();
+  
+}
+
 void toy_paper(Int_t ntf=0, Double_t minflux=0, Double_t maxflux=0, Int_t npf=0, Int_t seed=1)
 {
   prep_irf();
   cout<<ntf<<" "<<minflux<<" "<<maxflux<<" "<<npf<<" "<<seed<<endl;
-
+  // test_agnostic();
   // giacomos_test(2., 21);
   // show_one_example(0, 2);
-  // show_one_example(0.3, 4);
+  // show_one_example(0.3, 4); 
+  // show_one_example(0.45, 5);
   show_one_example(1.5, 5);
   // show_one_example(2., 6, kTRUE);
   // TH1D *hsingle = (TH1D*) hhh->Clone("hsingle");
