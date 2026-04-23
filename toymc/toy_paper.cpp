@@ -14,6 +14,7 @@
 #include <TLegend.h>
 #include <TRolke.h>
 #include <TPad.h>
+#include <TFile.h>
 
 #include <iostream>
 #include <fstream>
@@ -41,7 +42,7 @@ const Int_t nbins=40;
 const Double_t offmulti=5; //number of off positions (for background estimation)
 const Double_t conf=0.95; // confidence level of U.L.
 const Bool_t useLiMalike=kTRUE; // if Li&Ma should be used for TS instead of numerical fits 
-
+const Bool_t usefreqflux=kFALSE; // return the flux of the maximum TS instead of TS in frequentist method
 TH1D *ghprob=0; // global to the probability distribution
 
 // === preparations ===
@@ -338,6 +339,7 @@ Double_t scan_over_bins(Int_t ibin1, Int_t ibin2, Bool_t quiet=kFALSE)
 	  Double_t sigma = MMath::SignificanceLiMaSigned(on, offall, 1/offmulti);
 	  if (sigma<0) sigma=0;
 	  Double_t lambda = sigma*sigma+2*log(hgw->GetBinContent(ibin)/hgw->GetSumOfWeights());
+	  // lambda=sigma;
 	  if (lambda>bestmin)
 	    {
 	      bestmin=lambda;
@@ -346,6 +348,8 @@ Double_t scan_over_bins(Int_t ibin1, Int_t ibin2, Bool_t quiet=kFALSE)
 	}
       if (!quiet)
 	cout<<"!!!min = "<<bestmin<<", for bin"<<bestbin<<" (x="<<hon->GetBinCenter(bestbin)<<")"<<endl;
+      if (usefreqflux)
+	return (hon->GetBinContent(bestbin)-hoff->GetBinContent(bestbin))/(haeff->GetBinContent (bestbin));
       return bestmin;
     }
   
@@ -437,7 +441,8 @@ Double_t likelimits(Double_t fluxmin, TH1F *hofforg, Bool_t quiet=kTRUE)
   Int_t ibin1=1, ibin2=nbins; // full range
   Double_t min0 = scan_over_bins(ibin1, ibin2, kFALSE); // data TS
   Int_t n0=10000;// number of noise-only
-  TH1F *hlambda = new TH1F ("hlambda", "Distribution for no signal;lambda;number of realizations", 100, -10, 20);
+  TH1F *hlambda = new TH1F ("hlambda", "Distribution for no signal;lambda;number of realizations", 100,
+			    usefreqflux?-1:-10, usefreqflux?2:20);
   
   // now make a noise scan
   Int_t nchance=0;
@@ -486,6 +491,8 @@ Double_t likelimits(Double_t fluxmin, TH1F *hofforg, Bool_t quiet=kTRUE)
       if (p>conf) nabove++;
       flux+=0.03;
     }
+  
+  gcl->Sort();
   if (!quiet)
     {
       TCanvas *ccl = new TCanvas ("ccl", "", 640, 480);
@@ -499,7 +506,6 @@ Double_t likelimits(Double_t fluxmin, TH1F *hofforg, Bool_t quiet=kTRUE)
   // ffit.SetParameters(xx);
   // TF1 ffit("ffit", "1++x++x*x++pow(x,3)++pow(x,4)++pow(x,5)++pow(x,6)++pow(x,7)");
   // gcl->Fit(&ffit, "W");
-  gcl->Sort();
   Double_t fluxlimit = gcl->Eval(conf);
   // gcl->Fit("pol7", "W");
 
@@ -596,7 +602,7 @@ void show_one_example(Double_t trueflux, Int_t seed, Bool_t singlebin=kFALSE)
   leg->AddEntry(gtrue, "True flux", "P");
   leg->Draw();
   
-  climits->Print(Form("toy_limits_flux%.2f.eps", trueflux));
+  // climits->Print(Form("toy_limits_flux%.2f.eps", trueflux));
 
 }
 
@@ -772,6 +778,276 @@ void test_agnostic(Int_t seed=1, Double_t trueflux=2.5)
   
 }
 
+// this used the probability distribution obtained in the bayesian method
+// to get the maximum, and treat it in a frequentist way
+void  bayesian_freq(Int_t seed, Double_t f0min=0, Double_t f0max=0)
+{
+  gRandom->SetSeed(seed);
+  Int_t nf0=200; //number of bins to scan the flux 
+  nf0/=2;
+  // first generate a lot of flux=0 realizations
+  Int_t n0=5000;// number of noise-only
+  Double_t dummyx=0;
+
+  Double_t flux = f0min;
+  TGraph *gprob_median = new TGraph();
+  TGraph *gprob_cl = new TGraph();
+  TGraph *gts_median = new TGraph();
+  TGraph *gts_cl = new TGraph();
+  TH2D *hprob = new TH2D ("hprob", "Probability;Position;Flux", nbins, xmin, xmax, nf0, f0min, f0max+0.7);
+  while (flux<f0max)
+    {
+      TH1F *hflux0= new TH1F ("hflux0", "Flux = 0;best flux;N", nf0*10, f0min, f0max+0.7);
+      TH1F *hts0= new TH1F ("hts0", "Flux = 0;best TS;N", 1500, -10, 70);
+      for (int i=0; i<n0; i++)
+	{
+	  if (i%100 ==1 ) cout<<i<<" "<<n0<<"="<<100.*i/n0<<"% done"<<endl;
+	  fillhists(flux, dummyx, 0, kTRUE);
+	  Double_t bestflux=-1, bestprob=-1;
+	  for (int i1=1; i1<=nbins; i1++)
+	    for (int i2=1; i2<=nf0; i2++)
+	      {
+		Double_t x0=hprob->GetXaxis()->GetBinCenter(i1);
+		Double_t f0=hprob->GetYaxis()->GetBinCenter(i2);
+		Double_t pthis=p_d_true(x0, f0);
+		if (pthis>bestprob)
+		  {
+		    bestflux=f0;
+		    bestprob=pthis;
+		  }
+	      }
+	  hflux0->Fill(bestflux);
+	  
+	  Double_t bestts = scan_over_bins(0, nbins, kTRUE);
+	  hts0->Fill(bestts);
+	}
+      hflux0->ComputeIntegral();
+      Double_t q=0.5, median_prob=-1, fluxul_prob=-1, confm1=1-conf;
+      hflux0->GetQuantiles(1, &median_prob, &q);
+      hflux0->GetQuantiles(1, &fluxul_prob, &confm1);
+      cout<<"true flux = "<<flux<<", max likelihood flux median="<<median_prob<<", "<<conf<<" C.L. limit <"<<fluxul_prob<<", mean = "<<hflux0->GetMean()<<" under/overflow = "<<hflux0->GetBinContent(0)<<" "<<hflux0->GetBinContent(hflux0->GetNbinsX()+1)<<endl;
+      gprob_median->SetPoint(gprob_median->GetN(), median_prob, flux);
+      gprob_cl->SetPoint(gprob_cl->GetN(), fluxul_prob, flux);
+
+      Double_t median_ts=-1, fluxul_ts=-1;
+      hts0->GetQuantiles(1, &median_ts, &q);
+      hts0->GetQuantiles(1, &fluxul_ts, &confm1);
+      cout<<"true flux = "<<flux<<", max likelihood ts median="<<median_ts<<", "<<conf<<" C.L. limit <"<<fluxul_ts<<", mean = "<<hts0->GetMean()<<" under/overflow = "<<hts0->GetBinContent(0)<<" "<<hts0->GetBinContent(hts0->GetNbinsX()+1)<<endl;
+      gts_median->SetPoint(gts_median->GetN(), median_ts, flux);
+      gts_cl->SetPoint(gts_cl->GetN(), fluxul_ts, flux);
+
+      delete hflux0;
+      delete hts0;
+      flux+=0.03;
+    }
+  delete hprob;
+
+  gprob_median->Sort();
+  gprob_cl->Sort();
+      // Double_t p = 1.*ncl/n0;
+      // Double_t dp = sqrt(p*(1-p)/n0);
+
+  TCanvas *cc1 = new TCanvas ("cc1", "", 640, 480);
+  gprob_median->Draw("A*L");
+  TCanvas *cc2 = new TCanvas ("cc2", "", 640, 480);
+  gprob_cl->Draw("A*L");
+  TCanvas *cc3 = new TCanvas ("cc3", "", 640, 480);
+  gts_median->Draw("A*L");
+  TCanvas *cc4 = new TCanvas ("cc4", "", 640, 480);
+  gts_cl->Draw("A*L");
+
+  TFile *plikout = new TFile("bayes_freq_prob_ts.root", "RECREATE");
+  plikout->cd();
+  gprob_median->Write("gprob_median");
+  gprob_cl->Write("gprob_cl");
+  gts_median->Write("gts_median");
+  gts_cl->Write("gts_cl");
+  plikout->Close();
+}
+
+void bayesian_freq_read()
+{
+  TH2F *h0 = new TH2F ("h0", ";limit (TS method); limit (prob method)", 100, 0.4, 1, 100, 0.4, 1);
+
+  TFile *plikin = new TFile("bayes_freq_prob_ts_seed1_5000ev.root");
+  // TFile *plikin = new TFile("bayes_freq_prob_ts.root");
+  TGraph *gprob_median = (TGraph *) plikin->Get("gprob_median");
+  TGraph *gprob_cl = (TGraph *) plikin->Get("gprob_cl");
+  TGraph *gts_median = (TGraph *) plikin->Get("gts_median");
+  TGraph *gts_cl = (TGraph *) plikin->Get("gts_cl");
+
+  TCanvas *c1 = new TCanvas ("c1", "", 640, 480);
+  gprob_cl->Draw("A*L");
+  TCanvas *c2 = new TCanvas ("c2", "", 640, 480);
+  gts_cl->Draw("A*L");
+  
+  Int_t nf0=200/2; //number of bins to scan the flux
+  Double_t f0min=0, f0max=1;
+  TH2D *hprob = new TH2D ("hprob", "Probability;Position;Flux", nbins, xmin, xmax, nf0, f0min, f0max);
+  
+
+  Double_t ts_ul0 = -1; // U.L. for TS method with flux = 0;
+  Double_t prob_ul0 = -1; // U.L. for prob method with flux = 0;
+  for (int i=0; i<gprob_median->GetN(); i++)
+    if (gprob_median->GetY()[i]<1.e-6)
+      prob_ul0=gprob_median->GetX()[i];
+  for (int i=0; i<gts_median->GetN(); i++)
+    if (gts_median->GetY()[i]<1.e-6)
+      ts_ul0=gts_median->GetX()[i];
+  cout<<"U.L. for 0 flux, TS method="<<ts_ul0<<", prob method="<<prob_ul0<<endl;
+
+  gRandom->SetSeed(2);
+  Int_t n0=400;
+  Double_t flux=0.5, dummyx=-1;
+  for (int i=0; i<n0; i++)
+    {
+      if (i%100 ==1 ) cout<<i<<" "<<n0<<"="<<100.*i/n0<<"% done"<<endl;
+      fillhists(flux, dummyx, 0, kTRUE);
+      Double_t bestflux=-1, bestprob=-1;
+      for (int i1=1; i1<=nbins; i1++)
+	for (int i2=1; i2<=nf0; i2++)
+	  {
+	    Double_t x0=hprob->GetXaxis()->GetBinCenter(i1);
+	    Double_t f0=hprob->GetYaxis()->GetBinCenter(i2);
+	    Double_t pthis=p_d_true(x0, f0);
+	    if (pthis>bestprob)
+	      {
+		bestflux=f0;
+		bestprob=pthis;
+	      }
+	  }
+      if (bestflux<prob_ul0)
+	bestflux=prob_ul0;
+      
+      Double_t ul_prob = gprob_cl->Eval(bestflux);
+      
+      Double_t bestts = scan_over_bins(0, nbins, kTRUE);
+      if (bestts<ts_ul0)
+	bestts=ts_ul0;
+      Double_t ul_ts = gts_cl->Eval(bestts);
+
+      cout<<(bestflux==prob_ul0?"*":" ")<<(bestts==ts_ul0?"*":" ");
+      cout<<" prob method: "<<ul_prob<<" ( from "<<bestflux<<"), TS method: "<<ul_ts<<" ( from "<<bestts<<")"<< endl;
+      h0->Fill(ul_ts, ul_prob);
+    }
+
+  plikin->Close();
+  TCanvas *cc = new TCanvas ("cc", "", 640, 640);
+  TLine *l = new TLine(0.4, 0.4, 1, 1);
+  h0->Draw("colz");
+  l->Draw();
+}
+
+void appendixa()
+{
+  show_one_example(2., 6, kTRUE);
+  TH1D *hsingle = (TH1D*) hhh->Clone("hsingle");
+  show_one_example(2., 6, kFALSE);
+  TH1D *hall = (TH1D*) hhh->Clone("hall");
+
+  TCanvas *ccc = new TCanvas ("ccc", "", 640, 480);
+  ccc->SetTopMargin(0.01);
+  ccc->SetRightMargin(0.01);
+  ccc->SetLogy();
+  hall->SetLineColor(kRed);
+  hsingle->SetTitle("");
+  hall->SetTitle("");
+  hsingle->SetStats(0);
+  hall->SetStats(0);
+  hsingle->SetLineStyle(kDotted);
+  hsingle->Draw("HIST X");
+  hall->Draw("HIST X same");
+}
+
+// to avoid the problem with negative upper limits we compute the C.L. that the flux is > 0
+void freq_bayes_calccl(Double_t trueflux=0, Int_t npf=0, Int_t seed=1)
+{
+  gRandom->SetSeed(seed);
+  Double_t dummyx=0;
+
+  ofstream plikout(Form("out_freq_bayes_calccl_p0_f%.2f_seed%i.txt", trueflux, seed));
+  for (int ipf=0; ipf<npf; ipf++)
+    {
+      fillhists(trueflux, dummyx);
+      Double_t min = scan_over_bins(1, nbins, kTRUE);
+      TH1F *hofforg = (TH1F*) hoff->Clone("hofforg");
+      
+      Double_t bayesmax, bayeslo, bayeshi, giacomoul;
+      Double_t bayesul = bayes_scan(-1., trueflux+1., bayesmax, bayeslo, bayeshi, giacomoul, kFALSE);
+      Double_t clbayes=1;
+      Int_t ibin=1;
+      while (hhh->GetBinCenter(ibin)<0)
+	{
+	  clbayes-=hhh->GetBinContent(ibin);
+	  ibin++;
+	}
+      Int_t n0=1000; // number of realizations with 0 flux
+      Int_t nbelow=0;
+      for (int i=0; i<n0; i++)
+	{
+	  fillhists(0, dummyx, hofforg, kTRUE);
+	  Double_t min0 = scan_over_bins(1, nbins, kTRUE);
+	  if (min0<min)
+	    nbelow++;
+	}
+      delete hofforg;
+      cout<<"C.L.="<<100.*nbelow/n0<<" "<<clbayes*100.<<endl;
+      plikout<<1.*nbelow/n0<<" "<<clbayes<<endl;
+    }
+  plikout.close();
+
+}
+
+// testing some things with frequentist vs agnostic method
+void test_freq(Double_t trueflux=0, Int_t seed=1)
+{
+  gRandom->SetSeed(seed);
+
+  Double_t truex;
+  // make a table with standarized fluxes 
+  TGraph *gcl = new TGraph();  
+  Int_t n0=4000;
+  for (Double_t flux = trueflux; flux< trueflux +1.2; flux+=0.03)
+    {
+      Int_t ncl=0;
+      TH1F *h = new TH1F("h", "", 10000, -10, 250);
+      for (int i=0; i<n0; i++)
+  	{
+  	  fillhists(flux, truex, 0, kTRUE);
+  	  Double_t min = scan_over_bins(1, nbins, kTRUE);
+	  h->Fill(min);
+   	}
+      Double_t f=1-conf, quantile;
+      h->ComputeIntegral();
+      h->GetQuantiles(1, &quantile, &f);
+      cout<<flux<<" "<<quantile<<" "<<h->GetBinContent(0)<<" "<<h->GetBinContent(h->GetNbinsX()+1)<<endl;
+      gcl->SetPoint(gcl->GetN(), quantile, flux);
+      delete h;
+    }
+  gcl->Sort();
+  TCanvas *c = new TCanvas ("c", "", 640, 480);
+  gcl->Draw("A*L");
+
+  TH2F *h2 = new TH2F ("h2", ";agnostic;frequentist", 100, 0, 2, 100, 0, 2);
+  TH2F *h3 = new TH2F ("h3", ";exposure;frequentist/agnostic", 100, 0, 105, 100, 0, 3);
+  
+  for (int i=0; i<10000; i++)
+    {
+      fillhists(trueflux, truex);      
+      
+      Double_t *rolkelimits = new Double_t[nbins];
+      Double_t rolkelimit=calc_rolke(rolkelimits, kFALSE);
+      Double_t min = scan_over_bins(1, nbins, kTRUE);
+      Double_t freqlimit=gcl->Eval(min);
+      h2->Fill(rolkelimit, freqlimit);
+      h3->Fill(haeff->GetBinContent(haeff->FindBin(truex)), freqlimit/rolkelimit);
+    }
+  TCanvas *c2 = new TCanvas ("c2", "", 640, 480);
+  h2->Draw("colz");
+  TCanvas *c3 = new TCanvas ("c3", "", 640, 480);
+  h3->Draw("colz");
+}
+
 void toy_paper(Int_t ntf=0, Double_t minflux=0, Double_t maxflux=0, Int_t npf=0, Int_t seed=1)
 {
   prep_irf();
@@ -782,28 +1058,15 @@ void toy_paper(Int_t ntf=0, Double_t minflux=0, Double_t maxflux=0, Int_t npf=0,
   // show_one_example(0.3, 4); 
   // show_one_example(0.45, 5);
   show_one_example(1.5, 5);
-  // show_one_example(2., 6, kTRUE);
-  // TH1D *hsingle = (TH1D*) hhh->Clone("hsingle");
-  // show_one_example(2., 6, kFALSE);
-  // TH1D *hall = (TH1D*) hhh->Clone("hall");
-
-  // TCanvas *ccc = new TCanvas ("ccc", "", 640, 480);
-  // ccc->SetTopMargin(0.01);
-  // ccc->SetRightMargin(0.01);
-  // ccc->SetLogy();
-  // hall->SetLineColor(kRed);
-  // hsingle->SetTitle("");
-  // hall->SetTitle("");
-  // hsingle->SetStats(0);
-  // hall->SetStats(0);
-  // hsingle->SetLineStyle(kDotted);
-  // hsingle->Draw("HIST X");
-  // hall->Draw("HIST X same");
-  
+  // appendixa();
+  // freq_bayes_calccl(0.5, 10, 1);
   // show_one_example(0.5, 5);
  //   compare_methods(16,  0.5, 2., 250);
   // compare_methods(ntf, minflux, maxflux, npf, seed);
   // detection_bayes(seed, minflux, npf);
   // detection_freq(seed, minflux, npf);
   // detection_agnostic(seed, minflux, npf);
+  // bayesian_freq(1, 0, 1.);
+  // bayesian_freq_read();
+  // test_freq(1., 25);
 }
