@@ -29,7 +29,7 @@ bgdalpha=5
 cl=0.95
 
 mineest=0
-maxeest=10
+maxeest=4
 
 pointings = file['pointings']
 angleoffset=file['angleoffset'].item()
@@ -167,7 +167,7 @@ fluxes_bayes=[]
 fluxes_bayes_ep=[]
 fluxes_bayes_em=[]
 limits_freq=[]
-
+pf0s=[]
 #maxeest=len(eest)
 
 
@@ -196,6 +196,7 @@ inroi=check_in_roi(ras_true_f, decs_true_f)
 inroi=np.transpose(inroi[..., np.newaxis],axes=(0,2,1))
 nullmedians = np.median(tsmax_all[0,:,:], axis=-1)
 
+truefluxes=[]
 for iiter in range (niter):
     excess_eest, dec_true, ra_true, imask_true = create_excess(pointings=pointings, emigmy=emigmy, trueflux=trueflux, irfs=irfs)
     truefluxes+=[trueflux]
@@ -244,7 +245,9 @@ for iiter in range (niter):
     prob_norms=[]
     for ien in range (mineest,maxeest): 
         print ("bayes, eest bin: ", ien)
-        fs, lnp=bayes_scan(on[ien, mask_ok], off[ien, mask_ok], aeff_mig_eest[ien, :,mask_ok[mask_point]], gw_prob[mask_ok], fmax=1.5)
+        fmin=np.max([trueflux-0.4,0])
+        fmax=trueflux+0.4
+        fs, lnp=bayes_scan(on[ien, mask_ok], off[ien, mask_ok], aeff_mig_eest[ien, :,mask_ok[mask_point]], gw_prob[mask_ok], fmax=fmax, fmin=fmin)
         prob_norm=np.exp(lnp-lnp.max())/(np.exp(lnp-lnp.max())).sum()
         prob_norms+=[prob_norm]
     prob_norms=np.array(prob_norms)
@@ -269,7 +272,7 @@ for iiter in range (niter):
         bayes_ul+=[ul]
         bayes_e+=[eest[i]]
         print(f"E={eest[i]:.3f}, f = {median:.3f}+{errp:.3f}-{errm:.3f}, < {ul:.3f}")
-
+    pf0s+=[prob_norms.sum(axis=-1)]
     limits_bayes+=[bayes_ul]
     fluxes_bayes+=[bayes_med]
     fluxes_bayes_ep+=[bayes_errp]
@@ -313,6 +316,7 @@ fluxes_bayes=np.array(fluxes_bayes)
 fluxes_bayes_ep=np.array(fluxes_bayes_ep)
 fluxes_bayes_em=np.array(fluxes_bayes_em)
 limits_freq=np.array(limits_freq)
+pf0s=np.array(pf0s)
 np.savez_compressed(f"out_limits_ebin{mineest}to{maxeest}_f{trueflux}_s{seed}",
                     limits_agnostic=limits_agnostic,
                     limits_bayes=limits_bayes,
@@ -321,5 +325,6 @@ np.savez_compressed(f"out_limits_ebin{mineest}to{maxeest}_f{trueflux}_s{seed}",
                     fluxes_bayes_em=fluxes_bayes_em,
                     limits_freq=limits_freq,
                     ras_true=ras_true, decs_true=decs_true,
-                    eest=eest[:maxeest], truefluxes=truefluxes)
+                    eest=eest[:maxeest], truefluxes=truefluxes,
+                    pf0s=pf0s, fs=fs)
 
