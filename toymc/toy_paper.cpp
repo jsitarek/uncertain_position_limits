@@ -43,6 +43,10 @@ const Double_t offmulti=5; //number of off positions (for background estimation)
 const Double_t conf=0.95; // confidence level of U.L.
 const Bool_t useLiMalike=kTRUE; // if Li&Ma should be used for TS instead of numerical fits 
 const Bool_t usefreqflux=kFALSE; // return the flux of the maximum TS instead of TS in frequentist method
+const Bool_t addPSF=kFALSE;
+const Bool_t fixatcenter=kFALSE; // only needed for PSF, if set to true the simulated positions will be pulled to the closest bin center;
+const Double_t psfsigma=0.33;
+Double_t psfcont=0; // global to be set if PSF is used;
 TH1D *ghprob=0; // global to the probability distribution
 
 // === preparations ===
@@ -90,6 +94,23 @@ void prep_irf()
   leg->AddEntry(hbgd, "Background acceptance", "L");
   leg->AddEntry(haeff, "Effective area", "L");
   leg->Draw();
+
+  if (addPSF)
+    {
+      if (fixatcenter)
+	psfcont=TMath::Gaus(0.5, 0.5, psfsigma/((xmax-xmin)/nbins), kTRUE);
+      else
+	{
+	  Double_t sumsig=0;
+	  for (int i=0; i<100; i++)
+	    {
+	      Double_t x=gRandom->Uniform();
+	      sumsig+=TMath::Gaus(x, 0.5, psfsigma/((xmax-xmin)/nbins), kTRUE);
+	    }
+	  psfcont=sumsig/100.;
+	}
+      cout<<"Using PSF with sigma="<<psfsigma<<" corresponding to containement in single bin of "<<psfcont<<endl;
+    }
 }
 
 // if hofforg is provided background is taken from previous simulations rather than from true values
@@ -125,11 +146,25 @@ void fillhists(Double_t flux, Double_t &truex, TH1F *hofforg=0, Bool_t quiet=kFA
     return;
   truex = hgw->GetRandom();
   Double_t ntrue=haeff->GetBinContent(haeff->FindBin(truex))*flux;
-  Int_t ix = hon->FindBin(truex);
+  if (fixatcenter)
+    truex=hon->GetBinCenter(hon->FindBin(truex));
   if (!quiet)
     cout<<"source at x="<<truex<<", ntrue = "<<ntrue<<endl;
-  hon->Fill(truex, gRandom->Poisson(ntrue));
-  hon->SetBinError(ix, sqrt(hon->GetBinContent(ix)));
+  if (addPSF)
+    {
+      for (int ix=TMath::Max(0, hon->FindBin(truex-5*psfsigma)); ix<=TMath::Min(nbins-1, hon->FindBin(truex+5*psfsigma)); ix++)
+	{
+	  Double_t x = hon->GetBinCenter(ix);
+	  hon->Fill(x, gRandom->Poisson(TMath::Gaus(x, truex, psfsigma, kTRUE)*hon->GetBinWidth(1)*ntrue));
+	  hon->SetBinError(ix, sqrt(hon->GetBinContent(ix)));	  
+	}
+    }
+  else
+    {
+      Int_t ix = hon->FindBin(truex);
+      hon->Fill(truex, gRandom->Poisson(ntrue));
+      hon->SetBinError(ix, sqrt(hon->GetBinContent(ix)));
+    }
 }
 
 
@@ -169,14 +204,15 @@ Double_t p_d_true(Double_t x0, Double_t f0, Bool_t singlebin=kFALSE)
       Double_t don=hon->GetBinError(i);
       Double_t off=hoff->GetBinContent(i);
       Double_t model=off;
-      Double_t dmodel=hoff->GetBinError(i);
-      if (i == ix)
+      if (addPSF)
+	model+=TMath::Gaus(x, x0, psfsigma, kTRUE)*hon->GetBinWidth(1)*n0;
+      else
 	{
-	  model+=n0;
-	  dmodel = sqrt(dmodel*dmodel + n0);
+	  if (i == ix)
+	    model+=n0;
+	  else if (singlebin)
+	    continue;
 	}
-      else if (singlebin)
-	continue;
       Double_t S = model - off;
       Double_t B = calcBest(on, off*offmulti, offmulti, S);
       Double_t probOFF = TMath::Poisson(off*offmulti, B*offmulti);
@@ -423,7 +459,7 @@ Double_t calc_rolke(Double_t *limits, Bool_t quiet=kTRUE)
   for (int i=1; i<=nbins; i++)
     {
       Double_t x = hon->GetBinCenter(i);
-      Double_t aeff = haeff->GetBinContent(haeff->FindBin(x));
+      Double_t aeff = haeff->GetBinContent(haeff->FindBin(x))*psfcont;
       Double_t on=hon->GetBinContent(i);
       Double_t off=hoff->GetBinContent(i);
       Double_t doff=hoff->GetBinError(i);
@@ -565,8 +601,8 @@ void show_one_example(Double_t trueflux, Int_t seed, Bool_t singlebin=kFALSE)
   leg1->AddEntry(hofforg, "OFF region", "L");
   leg1->Draw();
   cevents->Print(Form("toy_events_flux%.2f.eps", trueflux));
-  Double_t likelimit = likelimits(trueflux, hofforg, kFALSE); // this breaks hon and hoff histograms !
-
+  // Double_t likelimit = likelimits(trueflux, hofforg, kFALSE); // this breaks hon and hoff histograms !
+  Double_t likelimit=0;
   TLine *lglobal = new TLine (xmin, likelimit, xmax, likelimit);
   lglobal->SetLineWidth(3);
   lglobal->SetLineStyle(kDashed);
@@ -738,6 +774,31 @@ void detection_agnostic(Int_t seed, Double_t minflux, Int_t npf)
   h->Draw();
 }
 
+void test_bayes(Int_t seed, Double_t trueflux, Int_t npf)
+{
+  gRandom->SetSeed(seed);
+  Int_t nok=0;
+  ofstream plikout(Form("out_test_bayes_f%.2f_seed%i.txt", trueflux, seed));
+
+  for (int iev=0; iev<npf; iev++)
+    {
+      Double_t truex;
+      fillhists(trueflux, truex);
+      Double_t bayesmax, bayeslo, bayeshi, giacomoul;
+      Double_t bayesul = bayes_scan(0, trueflux+2., bayesmax, bayeslo, bayeshi, giacomoul, kFALSE, kFALSE);
+
+      if (bayesul>trueflux)
+	nok++;
+      cout<<iev<<" "<<trueflux<<" "<<bayesul<<endl;
+      plikout<<trueflux<<" "<<bayesul<<endl;
+    }
+  plikout.close();
+  Double_t p=1.*nok/npf;
+  cout<<nok<<"/"<<npf<<" = "<<100.*p<<" +- "<<100.*sqrt(nok*p*(1-p))/nok<<endl;
+
+}
+
+  
 void test_agnostic(Int_t seed=1, Double_t trueflux=2.5)
 {
   gRandom->SetSeed(seed);
@@ -1057,10 +1118,11 @@ void toy_paper(Int_t ntf=0, Double_t minflux=0, Double_t maxflux=0, Int_t npf=0,
   // show_one_example(0, 2);
   // show_one_example(0.3, 4); 
   // show_one_example(0.45, 5);
-  show_one_example(1.5, 5);
+  // show_one_example(1.5, 5);
+  // show_one_example(1.5, 1);
   // appendixa();
   // freq_bayes_calccl(0.5, 10, 1);
-  // show_one_example(0.5, 5);
+  //show_one_example(0.5, 5);
  //   compare_methods(16,  0.5, 2., 250);
   // compare_methods(ntf, minflux, maxflux, npf, seed);
   // detection_bayes(seed, minflux, npf);
@@ -1069,4 +1131,5 @@ void toy_paper(Int_t ntf=0, Double_t minflux=0, Double_t maxflux=0, Int_t npf=0,
   // bayesian_freq(1, 0, 1.);
   // bayesian_freq_read();
   // test_freq(1., 25);
-}
+  test_bayes(seed, minflux, npf);
+ }
