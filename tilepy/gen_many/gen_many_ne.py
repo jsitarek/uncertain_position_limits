@@ -75,8 +75,14 @@ irfs = gammapy.irf.load_irf_dict_from_file(irffile)
 def draw_ra_dec():
     idx=rng.choice(a=gw_prob.shape[0]*gw_prob.shape[1], p=gw_prob.flatten()/np.sum(gw_prob))
     idx=np.unravel_index(idx,gw_prob.shape)
-    dec_true=rng.uniform(decs[idx[0]], decs[idx[0]+1])
-    ra_true=rng.uniform(ras[idx[1]], ras[idx[1]+1])
+    # randomized
+    #dec_true=rng.uniform(decs[idx[0]], decs[idx[0]+1])
+    #ra_true=rng.uniform(ras[idx[1]], ras[idx[1]+1])
+
+    #bin centers
+    dec_true=decs0[idx[0]]
+    ra_true=ras0[idx[1]]
+
     return dec_true, ra_true
 
 # Crab flux, must be the same as in the other script!!!
@@ -231,12 +237,13 @@ for iiter in range (niter):
         B=calcBest(on, off* bgdalpha, bgdalpha, n0) 
         poff=scipy.stats.poisson.pmf(k=np.round(ne.evaluate('off*bgdalpha')).astype('int'), mu=ne.evaluate('B*bgdalpha')) # slow!
         pon=scipy.stats.poisson.pmf(k=np.round(on).astype('int'), mu=ne.evaluate('B+n0')) # slow!
-        return ne.evaluate('sum(log(pon)+log(poff),axis=2)')+gw_prob[pos0[:,:, 0]]
+        return ne.evaluate('sum(log(pon)+log(poff),axis=2)')+np.log(gw_prob[pos0[:,:, 0]])
         #return (np.log(pon)+np.log(poff)).sum(axis=-1)+np.log(gw_prob[pos0[:,:, 0]])
 
     def bayes_scan(on, off, aeff_mig_eest, gw_prob, fmax, fmin=0, nf=50):
         fs=np.linspace(fmin, fmax, nf)
-        pos=np.arange(on.shape[-1])
+        #pos=np.arange(on.shape[-1])
+        pos=np.arange(aeff_mig_eest.shape[0])
         # axis = [f0, pos0, bin excess]
         lnp=ln_p_d_true(on=on[np.newaxis, np.newaxis,...], off=off[np.newaxis, np.newaxis,...], pos0=pos[np.newaxis, ..., np.newaxis], f0=fs[..., np.newaxis, np.newaxis], aeff_mig_eest=aeff_mig_eest[np.newaxis, ...], gw_prob=gw_prob)
         return fs, lnp
@@ -247,7 +254,21 @@ for iiter in range (niter):
         print ("bayes, eest bin: ", ien)
         fmin=np.max([trueflux-0.4,0])
         fmax=trueflux+0.4
-        fs, lnp=bayes_scan(on[ien, mask_ok], off[ien, mask_ok], aeff_mig_eest[ien, :,mask_ok[mask_point]], gw_prob[mask_ok], fmax=fmax, fmin=fmin)
+        
+        # original - do not work well for pixels just outside of the angleoffset
+        #fs, lnp=bayes_scan(on[ien, mask_ok], off[ien, mask_ok], aeff_mig_eest[ien, :,mask_ok[mask_point]], gw_prob[mask_ok], fmax=fmax, fmin=fmin)
+        
+        # this takes into account all the pixels and works fine, but needs 32 GB of run with the default settings
+        #fs, lnp=bayes_scan(on[ien, mask_point], off[ien, mask_point], aeff_mig_eest[ien, :, :], gw_prob[mask_ok], fmax=fmax, fmin=fmin)
+        
+        # to avoid too large memory usage we do this step sequentially (uses 2.2 GB or RAM)
+        fs=np.linspace(fmin, fmax, 50)
+        lnp=[]
+        for fs0 in fs:
+            _, lnp1 = bayes_scan(on[ien, mask_point], off[ien, mask_point], aeff_mig_eest[ien, :, :], gw_prob[mask_ok], fmax=fs0, fmin=fs0, nf=1)
+            lnp+=[lnp1]
+        lnp=np.concatenate(lnp, axis=0)
+        
         prob_norm=np.exp(lnp-lnp.max())/(np.exp(lnp-lnp.max())).sum()
         prob_norms+=[prob_norm]
     prob_norms=np.array(prob_norms)
